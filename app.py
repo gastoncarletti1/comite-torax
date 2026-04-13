@@ -7,6 +7,7 @@ from flask import (
     flash,
     make_response,
     send_from_directory,
+    send_file,
 )
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (
@@ -33,7 +34,7 @@ import hashlib
 import shutil
 import json
 import csv
-from io import StringIO
+from io import StringIO, BytesIO
 import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -445,8 +446,112 @@ app.jinja_env.cache = {}
 def get_upload_dir():
     """Devuelve el directorio de uploads, permitiendo override mediante app.config['UPLOAD_DIR']."""
     return app.config.get("UPLOAD_DIR", UPLOAD_DIR)
+
+
+UPLOAD_BUCKET = os.environ.get("UPLOAD_BUCKET")
+_GCS_BUCKET = None
+
+
+def _use_gcs() -> bool:
+    return bool(UPLOAD_BUCKET)
+
+
+def _get_gcs_bucket():
+    global _GCS_BUCKET
+    if _GCS_BUCKET is None:
+        from google.cloud import storage
+        client = storage.Client()
+        _GCS_BUCKET = client.bucket(UPLOAD_BUCKET)
+    return _GCS_BUCKET
+
+
+def upload_exists(filename: str) -> bool:
+    if not filename:
+        return False
+    if _use_gcs():
+        blob = _get_gcs_bucket().blob(filename)
+        return blob.exists()
+    return os.path.exists(os.path.join(get_upload_dir(), filename))
+
+
+def save_upload(file_storage, filename: str) -> None:
+    if _use_gcs():
+        blob = _get_gcs_bucket().blob(filename)
+        if hasattr(file_storage, "stream"):
+            file_storage.stream.seek(0)
+            blob.upload_from_file(
+                file_storage.stream,
+                content_type=getattr(file_storage, "mimetype", None),
+            )
+        else:
+            blob.upload_from_string(
+                file_storage, content_type="application/octet-stream"
+            )
+        return
+    os.makedirs(get_upload_dir(), exist_ok=True)
+    file_storage.save(os.path.join(get_upload_dir(), filename))
+
+
+def delete_upload(filename: str) -> None:
+    if not filename:
+        return
+    if _use_gcs():
+        blob = _get_gcs_bucket().blob(filename)
+        try:
+            blob.delete()
+        except Exception:
+            pass
+        return
+    path = os.path.join(get_upload_dir(), filename)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def send_upload_file(filename: str, as_attachment: bool = True):
+    if _use_gcs():
+        blob = _get_gcs_bucket().blob(filename)
+        if not blob.exists():
+            return None
+        data = blob.download_as_bytes()
+        content_type = blob.content_type or "application/octet-stream"
+        return send_file(
+            BytesIO(data),
+            mimetype=content_type,
+            as_attachment=as_attachment,
+            download_name=filename,
+        )
+    return send_from_directory(get_upload_dir(), filename, as_attachment=as_attachment)
 default_sqlite = "sqlite:///" + os.path.join(BASE_DIR, "instance", "comite.db")
-app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", default_sqlite)
+# TEMPORAL: PostgreSQL en Render está caída, usar SQLite
+# app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", default_sqlite)
+cloudsql_conn = os.environ.get("CLOUD_SQL_CONNECTION_NAME")
+db_user = os.environ.get("DB_USER")
+db_pass = os.environ.get("DB_PASS")
+db_name = os.environ.get("DB_NAME")
+
+if cloudsql_conn and db_user and db_pass and db_name:
+    from google.cloud.sql.connector import Connector
+
+    _cloudsql_connector = Connector()
+
+    def _getconn():
+        return _cloudsql_connector.connect(
+            cloudsql_conn,
+            "pg8000",
+            user=db_user,
+            password=db_pass,
+            db=db_name,
+        )
+
+    app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql+pg8000://"
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"creator": _getconn}
+else:
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+        "DATABASE_URL", default_sqlite
+    )
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
@@ -2367,8 +2472,7 @@ def patient_new():
             filename = secure_filename(genogram_pdf.filename)
             if allowed_patient_file(filename):
                 unique_name = f"patient_{patient.id}_familiograma_{int(time.time())}.pdf"
-                os.makedirs(get_upload_dir(), exist_ok=True)
-                genogram_pdf.save(os.path.join(get_upload_dir(), unique_name))
+                save_upload(genogram_pdf, unique_name)
                 patient.family_genogram_pdf = unique_name
                 db.session.commit()
             else:
@@ -2641,8 +2745,7 @@ def patient_screening(patient_id):
                 fname = secure_filename(fu_file.filename)
                 if allowed_patient_file(fname):
                     unique_name = f"screeningfu_{screening.id}_{int(time.time())}_{fname}"
-                    os.makedirs(get_upload_dir(), exist_ok=True)
-                    fu_file.save(os.path.join(get_upload_dir(), unique_name))
+                    save_upload(fu_file, unique_name)
                     file_name = unique_name
                 else:
                     flash("Solo se permiten PDF/imagenes (pdf/png/jpg/jpeg).", "danger")
@@ -2705,9 +2808,7 @@ def patient_screening(patient_id):
             filename = secure_filename(study_file.filename)
             if allowed_patient_file(filename):
                 unique_name = f"screening_{patient.id}_{int(time.time())}.pdf"
-                os.makedirs(get_upload_dir(), exist_ok=True)
-                save_path = os.path.join(get_upload_dir(), unique_name)
-                study_file.save(save_path)
+                save_upload(study_file, unique_name)
                 screening.study_file = unique_name
             else:
                 flash("Solo se permiten PDF/imagenes (pdf/png/jpg/jpeg).", "danger")
@@ -2746,11 +2847,10 @@ def patient_screening_file(patient_id):
     if not screening.study_file:
         flash("No hay archivo de screening cargado.", "warning")
         return redirect(url_for("patient_screening", patient_id=patient_id))
-    file_path = os.path.join(get_upload_dir(), screening.study_file)
-    if not os.path.exists(file_path):
+    if not upload_exists(screening.study_file):
         flash("El archivo no se encuentra disponible.", "danger")
         return redirect(url_for("patient_screening", patient_id=patient_id))
-    return send_from_directory(get_upload_dir(), screening.study_file, as_attachment=True)
+    return send_upload_file(screening.study_file, as_attachment=True)
 
 
 @app.route("/screening/followup/<int:followup_id>/file")
@@ -2760,11 +2860,10 @@ def screening_followup_file(followup_id):
     if not fu.file_name:
         flash("No hay archivo adjunto para este control.", "warning")
         return redirect(url_for("patient_screening", patient_id=fu.screening.patient_id))
-    file_path = os.path.join(get_upload_dir(), fu.file_name)
-    if not os.path.exists(file_path):
+    if not upload_exists(fu.file_name):
         flash("El archivo no se encuentra disponible.", "danger")
         return redirect(url_for("patient_screening", patient_id=fu.screening.patient_id))
-    return send_from_directory(get_upload_dir(), fu.file_name, as_attachment=True)
+    return send_upload_file(fu.file_name, as_attachment=True)
 
 
 @app.route("/screening/followup/<int:followup_id>/delete", methods=["POST"])
@@ -2774,12 +2873,7 @@ def screening_followup_delete(followup_id):
     patient_id = fu.screening.patient_id
     # borrar archivo si existe
     if fu.file_name:
-        path = os.path.join(get_upload_dir(), fu.file_name)
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        delete_upload(fu.file_name)
     db.session.delete(fu)
     db.session.commit()
     flash("Control eliminado.", "success")
@@ -2842,8 +2936,7 @@ def screening_followup_edit(followup_id):
             fname = secure_filename(file.filename)
             if allowed_patient_file(fname):
                 unique_name = f"screeningfu_{fu.id}_{int(time.time())}_{fname}"
-                os.makedirs(get_upload_dir(), exist_ok=True)
-                file.save(os.path.join(get_upload_dir(), unique_name))
+                save_upload(file, unique_name)
                 fu.file_name = unique_name
             else:
                 flash("Solo se permiten PDF/imagenes (pdf/png/jpg/jpeg).", "danger")
@@ -2931,15 +3024,9 @@ def patient_edit(patient_id):
             filename = secure_filename(genogram_pdf.filename)
             if allowed_patient_file(filename):
                 if patient.family_genogram_pdf:
-                    old_path = os.path.join(get_upload_dir(), patient.family_genogram_pdf)
-                    if os.path.exists(old_path):
-                        try:
-                            os.remove(old_path)
-                        except Exception:
-                            pass
+                    delete_upload(patient.family_genogram_pdf)
                 unique_name = f"patient_{patient.id}_familiograma_{int(time.time())}.pdf"
-                os.makedirs(get_upload_dir(), exist_ok=True)
-                genogram_pdf.save(os.path.join(get_upload_dir(), unique_name))
+                save_upload(genogram_pdf, unique_name)
                 patient.family_genogram_pdf = unique_name
             else:
                 flash("El familiograma solo admite PDF.", "warning")
@@ -2994,12 +3081,7 @@ def patient_delete(patient_id):
             db.session.delete(sc)
 
         if patient.family_genogram_pdf:
-            pdf_path = os.path.join(get_upload_dir(), patient.family_genogram_pdf)
-            if os.path.exists(pdf_path):
-                try:
-                    os.remove(pdf_path)
-                except Exception:
-                    pass
+            delete_upload(patient.family_genogram_pdf)
 
         db.session.delete(patient)
         db.session.commit()
@@ -3061,11 +3143,10 @@ def patient_family_genogram_download(patient_id):
     if not patient.family_genogram_pdf:
         flash("Este paciente no tiene familiograma adjunto.", "warning")
         return redirect(url_for("patient_detail", patient_id=patient.id))
-    file_path = os.path.join(get_upload_dir(), patient.family_genogram_pdf)
-    if not os.path.exists(file_path):
+    if not upload_exists(patient.family_genogram_pdf):
         flash("El archivo adjunto no se encuentra disponible.", "danger")
         return redirect(url_for("patient_detail", patient_id=patient.id))
-    return send_from_directory(get_upload_dir(), patient.family_genogram_pdf, as_attachment=True)
+    return send_upload_file(patient.family_genogram_pdf, as_attachment=True)
 
 
 @app.route("/reviews/<int:review_id>/resolve", methods=["POST"])
@@ -3188,9 +3269,7 @@ def study_new(patient_id):
             filename = secure_filename(pdf_file.filename)
             if allowed_study_file(filename):
                 unique_name = f"study_{study.id}_{int(time.time())}.pdf"
-                os.makedirs(get_upload_dir(), exist_ok=True)
-                save_path = os.path.join(get_upload_dir(), unique_name)
-                pdf_file.save(save_path)
+                save_upload(pdf_file, unique_name)
                 study.report_file = unique_name
             else:
                 flash("Solo se permiten archivos PDF para el reporte.", "danger")
@@ -3244,9 +3323,7 @@ def medical_info():
             filename = secure_filename(file.filename)
             if allowed_patient_file(filename):
                 unique_name = f"medres_{int(time.time())}_{filename}"
-                os.makedirs(get_upload_dir(), exist_ok=True)
-                save_path = os.path.join(get_upload_dir(), unique_name)
-                file.save(save_path)
+                save_upload(file, unique_name)
                 file_name = unique_name
             else:
                 flash("Formato no permitido. Solo PDF/PNG/JPG/JPEG.", "danger")
@@ -3274,11 +3351,10 @@ def medical_info_download(resource_id):
     if not res.file_name:
         flash("Este recurso no tiene archivo adjunto.", "warning")
         return redirect(url_for("medical_info"))
-    file_path = os.path.join(get_upload_dir(), res.file_name)
-    if not os.path.exists(file_path):
+    if not upload_exists(res.file_name):
         flash("El archivo adjunto no se encuentra disponible.", "danger")
         return redirect(url_for("medical_info"))
-    return send_from_directory(get_upload_dir(), res.file_name, as_attachment=True)
+    return send_upload_file(res.file_name, as_attachment=True)
 
 @app.route("/studies/<int:study_id>/file")
 @login_required
@@ -3287,11 +3363,10 @@ def study_download(study_id):
     if not study.report_file:
         flash("Este estudio no tiene archivo adjunto.", "warning")
         return redirect(url_for("patient_detail", patient_id=study.patient_id))
-    file_path = os.path.join(get_upload_dir(), study.report_file)
-    if not os.path.exists(file_path):
+    if not upload_exists(study.report_file):
         flash("El archivo adjunto no se encuentra disponible.", "danger")
         return redirect(url_for("patient_detail", patient_id=study.patient_id))
-    return send_from_directory(get_upload_dir(), study.report_file, as_attachment=True)
+    return send_upload_file(study.report_file, as_attachment=True)
 
 
 @app.route("/studies/<int:study_id>/edit", methods=["GET", "POST"])
@@ -3323,9 +3398,7 @@ def study_edit(study_id):
         # Acción: Eliminar estudio
         if request.form.get("action") == "delete":
             if study.report_file:
-                file_path = os.path.join(get_upload_dir(), study.report_file)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+                delete_upload(study.report_file)
             db.session.delete(study)
             db.session.commit()
             flash("Estudio eliminado correctamente.", "success")
@@ -3368,12 +3441,9 @@ def study_edit(study_id):
             filename = secure_filename(pdf_file.filename)
             if allowed_study_file(filename):
                 if study.report_file:
-                    old_path = os.path.join(get_upload_dir(), study.report_file)
-                    if os.path.exists(old_path):
-                        os.remove(old_path)
+                    delete_upload(study.report_file)
                 unique_name = f"study_{study.id}_{int(time.time())}.pdf"
-                os.makedirs(get_upload_dir(), exist_ok=True)
-                pdf_file.save(os.path.join(get_upload_dir(), unique_name))
+                save_upload(pdf_file, unique_name)
                 study.report_file = unique_name
             else:
                 flash("Solo se permiten archivos PDF para el reporte.", "danger")
@@ -3494,9 +3564,7 @@ def study_edit(study_id):
                         idx = start_idx
                         if idx < len(studies_created):
                             unique_name = f"study_{studies_created[idx].id}_{int(time.time())}.pdf"
-                            os.makedirs(get_upload_dir(), exist_ok=True)
-                            save_path = os.path.join(get_upload_dir(), unique_name)
-                            f.save(save_path)
+                            save_upload(f, unique_name)
                             studies_created[idx].report_file = unique_name
                     else:
                         flash("Solo se permiten archivos PDF para el reporte.", "danger")
@@ -3521,9 +3589,7 @@ def study_edit(study_id):
                 filename = secure_filename(f.filename)
                 if allowed_study_file(filename):
                     unique_name = f"study_{studies_created[idx].id}_{int(time.time())}.pdf"
-                    os.makedirs(get_upload_dir(), exist_ok=True)
-                    save_path = os.path.join(get_upload_dir(), unique_name)
-                    f.save(save_path)
+                    save_upload(f, unique_name)
                     studies_created[idx].report_file = unique_name
                 else:
                     flash("Solo se permiten archivos PDF para el reporte.", "danger")
@@ -3584,9 +3650,7 @@ def study_delete(study_id):
     
     # Borrar archivo PDF si existe
     if study.report_file:
-        file_path = os.path.join(get_upload_dir(), study.report_file)
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        delete_upload(study.report_file)
     
     db.session.delete(study)
     db.session.commit()
@@ -3759,9 +3823,7 @@ def consultation_new(patient_id):
                         idx = start_idx
                         if idx < len(studies_created):
                             unique_name = f"study_{studies_created[idx].id}_{int(time.time())}.pdf"
-                            os.makedirs(get_upload_dir(), exist_ok=True)
-                            save_path = os.path.join(get_upload_dir(), unique_name)
-                            f.save(save_path)
+                            save_upload(f, unique_name)
                             studies_created[idx].report_file = unique_name
                     else:
                         flash("Solo se permiten archivos PDF para el reporte.", "danger")
@@ -3777,9 +3839,7 @@ def consultation_new(patient_id):
                 filename = secure_filename(f.filename)
                 if allowed_study_file(filename):
                     unique_name = f"study_{studies_created[idx].id}_{int(time.time())}.pdf"
-                    os.makedirs(get_upload_dir(), exist_ok=True)
-                    save_path = os.path.join(get_upload_dir(), unique_name)
-                    f.save(save_path)
+                    save_upload(f, unique_name)
                     studies_created[idx].report_file = unique_name
                 else:
                     flash("Solo se permiten archivos PDF para el reporte.", "danger")
@@ -4007,9 +4067,7 @@ def consultation_edit(consultation_id):
                         idx = start_idx
                         if idx < len(studies_created):
                             unique_name = f"study_{studies_created[idx].id}_{int(time.time())}.pdf"
-                            os.makedirs(get_upload_dir(), exist_ok=True)
-                            save_path = os.path.join(get_upload_dir(), unique_name)
-                            f.save(save_path)
+                            save_upload(f, unique_name)
                             studies_created[idx].report_file = unique_name
                     else:
                         flash("Solo se permiten archivos PDF para el reporte.", "danger")
@@ -4036,9 +4094,7 @@ def consultation_edit(consultation_id):
                 filename = secure_filename(f.filename)
                 if allowed_study_file(filename):
                     unique_name = f"study_{studies_created[idx].id}_{int(time.time())}.pdf"
-                    os.makedirs(get_upload_dir(), exist_ok=True)
-                    save_path = os.path.join(get_upload_dir(), unique_name)
-                    f.save(save_path)
+                    save_upload(f, unique_name)
                     studies_created[idx].report_file = unique_name
                 else:
                     flash("Solo se permiten archivos PDF para el reporte.", "danger")
@@ -4153,5 +4209,5 @@ if __name__ == "__main__":
         scheduler.start()
         print("[INFO] Scheduler iniciado - recordatorios automáticos activados")
     
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)

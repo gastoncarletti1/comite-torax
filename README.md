@@ -23,6 +23,11 @@ Aplicación Flask que permite a un pequeño grupo de médicos registrar paciente
 | -------------- | -------------------------------------------------------- | ----------------------------- |
 | `SECRET_KEY`   | Clave de sesión Flask/CSRF. Cambiar en producción.       | `cambia-esta-clave-por-una…` |
 | `DATABASE_URL` | Cadena SQLAlchemy (Ej. `sqlite:///comite.db` / Postgres) | `sqlite:///comite.db`        |
+| `UPLOAD_BUCKET` | Bucket de Google Cloud Storage para archivos (opcional). Si no se define, usa disco local. | *(vacío)* |
+| `CLOUD_SQL_CONNECTION_NAME` | Nombre de conexión de Cloud SQL (`PROYECTO:REGION:INSTANCIA`). Si está definido usa el conector oficial. | *(vacío)* |
+| `DB_USER` | Usuario de base de datos (Cloud SQL connector). | *(vacío)* |
+| `DB_PASS` | Password de base de datos (Cloud SQL connector). | *(vacío)* |
+| `DB_NAME` | Nombre de base de datos (Cloud SQL connector). | *(vacío)* |
 
 Opcionalmente define `FLASK_APP=app.py` y `FLASK_ENV=production`.
 
@@ -64,6 +69,131 @@ Se crea automáticamente la base `instance/comite.db`, un usuario admin (`admin`
 docker compose build
 docker compose up
 ```
+
+### Google Cloud Run
+
+**Resumen**
+- Cloud Run inyecta `PORT`; el contenedor debe escuchar ese puerto.
+- Define `SECRET_KEY` y `DATABASE_URL` como variables de entorno del servicio.
+
+**1) Preparar GCP**
+```bash
+gcloud config set project TU_PROYECTO
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com
+```
+
+**2) Construir y subir imagen**
+```bash
+gcloud artifacts repositories create comite-torax \
+  --repository-format=docker \
+  --location=us-central1
+
+gcloud builds submit \
+  --tag us-central1-docker.pkg.dev/TU_PROYECTO/comite-torax/app:latest
+```
+
+**3) Base de datos**
+
+Opción A: **Cloud SQL (Postgres)**
+```bash
+gcloud services enable sqladmin.googleapis.com
+gcloud sql instances create comite-torax-db \
+  --database-version=POSTGRES_14 \
+  --region=us-central1
+gcloud sql databases create comite --instance=comite-torax-db
+gcloud sql users create comite_user --instance=comite-torax-db --password=TU_PASSWORD
+```
+
+Cadena SQLAlchemy para Cloud SQL:
+```
+postgresql+psycopg://comite_user:TU_PASSWORD@/comite?host=/cloudsql/TU_PROYECTO:us-central1:comite-torax-db
+```
+
+Si prefieres el **Connector oficial**, define variables en Cloud Run:
+```
+CLOUD_SQL_CONNECTION_NAME=TU_PROYECTO:us-central1:comite-torax-db
+DB_USER=comite_user
+DB_PASS=TU_PASSWORD
+DB_NAME=comite
+```
+
+Opción B: **Postgres gestionado externo**
+```
+postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME
+```
+
+**4) Desplegar en Cloud Run**
+```bash
+gcloud run deploy comite-torax \
+  --image us-central1-docker.pkg.dev/TU_PROYECTO/comite-torax/app:latest \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars SECRET_KEY=TU_SECRETO,DATABASE_URL="postgresql+psycopg://..." \
+  --memory 512Mi \
+  --cpu 1 \
+  --max-instances 3
+```
+
+Si usas **Cloud SQL**, agrega:
+```bash
+gcloud run deploy comite-torax \
+  --image us-central1-docker.pkg.dev/TU_PROYECTO/comite-torax/app:latest \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars SECRET_KEY=TU_SECRETO,DATABASE_URL="postgresql+psycopg://..." \
+  --add-cloudsql-instances TU_PROYECTO:us-central1:comite-torax-db
+```
+
+Si usas **Connector oficial** (recomendado):
+```bash
+gcloud run deploy comite-torax \
+  --image us-central1-docker.pkg.dev/TU_PROYECTO/comite-torax/app:latest \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars SECRET_KEY=TU_SECRETO,CLOUD_SQL_CONNECTION_NAME=TU_PROYECTO:us-central1:comite-torax-db,DB_USER=comite_user,DB_PASS=TU_PASSWORD,DB_NAME=comite \
+  --add-cloudsql-instances TU_PROYECTO:us-central1:comite-torax-db
+```
+
+**5) Notas importantes**
+- `SECRET_KEY` debe ser aleatoria y segura (32+ caracteres).
+- Cloud Run no preserva disco local; no uses SQLite en producción.
+- `uploads/` y `instance/` deben ir a storage externo si los necesitás (Cloud Storage).
+
+**5.1) Subidas de archivos (Cloud Storage)**
+
+Cloud Run es efímero, por lo que los archivos deben persistir en un bucket.
+La app usa `UPLOAD_BUCKET`: si está definido, guarda/lee desde GCS; si no, usa el directorio local `uploads/`.
+
+Crear bucket:
+```bash
+gcloud storage buckets create gs://TU_BUCKET \
+  --location=us-central1 \
+  --uniform-bucket-level-access
+```
+
+Dar permisos al servicio de Cloud Run (sustituye `COMITE_SA`):
+```bash
+gcloud iam service-accounts create comite-torax-sa
+gcloud projects add-iam-policy-binding TU_PROYECTO \
+  --member="serviceAccount:comite-torax-sa@TU_PROYECTO.iam.gserviceaccount.com" \
+  --role="roles/storage.objectAdmin"
+```
+
+Deploy usando ese service account:
+```bash
+gcloud run deploy comite-torax \
+  --image us-central1-docker.pkg.dev/TU_PROYECTO/comite-torax/app:latest \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars SECRET_KEY=TU_SECRETO,DATABASE_URL="postgresql+psycopg://...",UPLOAD_BUCKET=TU_BUCKET \
+  --service-account comite-torax-sa@TU_PROYECTO.iam.gserviceaccount.com
+```
+
+Nota: en producción es recomendable usar siempre `UPLOAD_BUCKET`.
+
+**6) Variables de entorno (resumen)**
+- `SECRET_KEY`: clave de sesión.
+- `DATABASE_URL`: cadena SQLAlchemy (Postgres recomendado).
 
 ### Manual / Gunicorn
 

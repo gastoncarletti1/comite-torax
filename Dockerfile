@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim
+FROM python:3.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -15,7 +15,8 @@ ENV SECRET_KEY=change-me \
     DATABASE_URL=sqlite:///instance/comite.db \
     PYTHONIOENCODING=utf-8
 
-EXPOSE 5000
+# Cloud Run provides $PORT
+ENV PORT=8080
 
 # Use wsgi.py as entry point for Gunicorn (DB init happens once at startup)
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "wsgi:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT} wsgi:app"]
