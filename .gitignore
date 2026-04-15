@@ -1,0 +1,32 @@
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local app data
+instance/
+backups/
+uploads/
+
+# Logs
+*.log
+server_stdout.log
+server_stderr.log
+audit.log
+
+# OS / editor temp files
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
