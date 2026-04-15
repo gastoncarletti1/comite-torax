@@ -116,3 +116,24 @@ def test_multiple_studies_per_group(client, db_session, user, patient, temp_uplo
         # control reminder created
         cr = ControlReminder.query.filter_by(consultation_id=studies[0].consultation_id if studies else None).first()
         assert cr is not None
+
+
+def test_immunology_values_persist_on_initial_create(client, db_session, user, patient):
+    login(client)
+    resp = client.post(
+        f"/patients/{patient.id}/consultations/new",
+        data={
+            "date": "2026-04-15",
+            "notes": "Consulta con autoinmunidad",
+            "lab_general": "cxvcvv",
+            "lab_immunology": ["fan_hep2_1", "anti_ccp"],
+            "lab_immunology_value_fan_hep2_1": "40",
+            "lab_immunology_value_anti_ccp": "30",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"FAN Hep 2 (1ra muestra)" in resp.data
+    assert b"40" in resp.data
+    assert b"Anti CCP" in resp.data
+    assert b"30" in resp.data

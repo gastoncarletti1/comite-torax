@@ -3938,7 +3938,7 @@ def consultation_edit(consultation_id):
         
         # Actualizar laboratorio de inmunología (checkboxes + valores)
         immuno_list = request.form.getlist("lab_immunology")
-        consultation.lab_immunology = ",".join(immuno_list) if immuno_list else None
+        consultation.lab_immunology = _serialize_list(immuno_list)
         
         # Capturar valores de inmunología
         immuno_values = {}
