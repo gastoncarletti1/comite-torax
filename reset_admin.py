@@ -1,6 +1,7 @@
-from app import app, db, User
+from app import app, db, User, create_tables_and_admin
 
 with app.app_context():
+    create_tables_and_admin()
     admin = User.query.filter_by(username="admin").first()
     print("Admin encontrado:", admin)
 
