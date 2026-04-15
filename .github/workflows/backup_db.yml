@@ -1,0 +1,74 @@
+name: Backup DB
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_name:
+        description: "Optional backup label"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 6 * * 1"
+
+env:
+  CLOUD_SQL_INSTANCE: comite-torax-app:southamerica-east1:db-comite
+
+jobs:
+  backup-db:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/166445237528/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "github-deployer@comite-torax-app.iam.gserviceaccount.com"
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Download Cloud SQL Auth Proxy
+        run: |
+          curl -fsSL -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.18.2/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+
+      - name: Start Cloud SQL Auth Proxy
+        run: |
+          ./cloud-sql-proxy --address 127.0.0.1 --port 5432 "${{ env.CLOUD_SQL_INSTANCE }}" > proxy.log 2>&1 &
+          sleep 10
+
+      - name: Create backup dump
+        env:
+          PGPASSWORD: ${{ secrets.DB_PASS }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          BACKUP_NAME: ${{ github.event.inputs.backup_name }}
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          LABEL="${BACKUP_NAME:-manual}"
+          FILE_NAME="backup-${LABEL}-${TIMESTAMP}.dump"
+          pg_dump -h 127.0.0.1 -p 5432 -U "${DB_USER}" -d "${DB_NAME}" -Fc -f "${FILE_NAME}"
+          echo "BACKUP_FILE=${FILE_NAME}" >> "${GITHUB_ENV}"
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_FILE }}
+          path: ${{ env.BACKUP_FILE }}
+          retention-days: 14
+
+      - name: Upload proxy log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-log
+          path: proxy.log
+          retention-days: 7

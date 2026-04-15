@@ -1,0 +1,42 @@
+name: Sync DB Schema (Manual)
+
+on:
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: comite-torax-app
+  CLOUD_SQL_INSTANCE: comite-torax-app:southamerica-east1:db-comite
+
+jobs:
+  sync-schema:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/166445237528/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "github-deployer@comite-torax-app.iam.gserviceaccount.com"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync schema
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ env.CLOUD_SQL_INSTANCE }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        run: python sync_schema.py
