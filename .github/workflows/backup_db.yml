@@ -30,10 +30,14 @@ jobs:
           workload_identity_provider: "projects/166445237528/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
           service_account: "github-deployer@comite-torax-app.iam.gserviceaccount.com"
 
-      - name: Install PostgreSQL client
+      - name: Install PostgreSQL 18 client
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y wget gnupg
+          wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
 
       - name: Download Cloud SQL Auth Proxy
         run: |
