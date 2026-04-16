@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
-<div style="background:#f2f2f2; padding:40px 20px; border-radius:12px; text-align:center;">
-  <h1 style="font-size:1.4rem; font-weight:700; margin-bottom:10px; letter-spacing:0.3px; white-space:nowrap;">
-    “ES DIFÍCIL DETENER A QUIEN AVANZA CON SU CORAZÓN EN LA MANO”
+<div class="dashboard-hero">
+  <h1 class="dashboard-hero__title">
+    &ldquo;ES DIF&Iacute;CIL DETENER A QUIEN AVANZA CON SU CORAZ&Oacute;N EN LA MANO&rdquo;
   </h1>
-  <div style="margin-top:30px;">
-    <img src="{{ url_for('static', filename='img/portada_lung.png') }}" alt="Comité multidisciplinario" style="max-width:100%; height:auto; border-radius:12px; box-shadow:0 6px 24px rgba(0,0,0,0.08);">
+  <div class="dashboard-hero__media">
+    <img src="{{ url_for('static', filename='img/portada_lung.png') }}" alt="Comit&eacute; multidisciplinario" class="dashboard-hero__image">
   </div>
 </div>
 {% endblock %}
