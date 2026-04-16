@@ -93,7 +93,7 @@
   {% endif %}
 </p>
 
-  <p>
+  <div class="action-row">
   <a class="btn-link" href="{{ url_for('patient_edit', patient_id=patient.id) }}">Editar datos</a>
   <a class="btn-link btn-secondary" href="{{ url_for('patients_list') }}">Volver al listado</a>
   <a class="btn-link" href="{{ url_for('consultation_new', patient_id=patient.id) }}">Nueva consulta</a>
@@ -101,12 +101,12 @@
   <a class="btn-link" href="{{ url_for('patient_case_presentation', patient_id=patient.id) }}" target="_blank">Presentacion de caso clinico</a>
   <a class="btn-link" href="{{ url_for('patient_screening', patient_id=patient.id) }}">Screening</a>
   {% if current_user.role == 'admin' %}
-    <form method="post" action="{{ url_for('patient_delete', patient_id=patient.id) }}" style="display:inline" onsubmit="return confirm('Seguro que deseas eliminar este paciente y todos sus registros asociados?');">
+    <form method="post" action="{{ url_for('patient_delete', patient_id=patient.id) }}" onsubmit="return confirm('Seguro que deseas eliminar este paciente y todos sus registros asociados?');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn-link btn-secondary" style="background:#c0392b">Eliminar paciente</button>
     </form>
   {% endif %}
-</p>
+</div>
 
 <div class="form-section">
   <h2>Tabaquismo</h2>
@@ -190,7 +190,7 @@
 <div class="form-section">
   <h2>Consultas</h2>
   {% if consultations %}
-    <ul>
+    <ul class="patient-results">
       {% for c in consultations %}
         <li>
           <strong>Fecha:</strong> {{ c.date or '---' }}<br>
@@ -203,7 +203,6 @@
         {% endif %}
         <a href="{{ url_for('consultation_view', consultation_id=c.id) }}">Ver consulta</a>
         </li>
-        <hr>
       {% endfor %}
     </ul>
   {% else %}
@@ -219,7 +218,7 @@
     {% for consultation_group in sorted_consultation_studies %}
       <div style="margin-bottom: 20px;">
         <strong>Estudio asociado a consulta - {{ consultation_group.consultation.date or '---' }}</strong>
-        <ul style="margin-top: 10px; padding-left: 20px;">
+        <ul class="patient-results" style="margin-top: 10px;">
           {% for s in consultation_group.studies %}
             <li>
               {{ s.study_type or 'Estudio' }}
@@ -239,7 +238,7 @@
   {% if standalone_studies %}
     <div style="margin-top: 20px;">
       <strong>Estudios sin consulta asociada</strong>
-      <ul style="margin-top: 10px; padding-left: 20px;">
+      <ul class="patient-results" style="margin-top: 10px;">
         {% for s in standalone_studies %}
           <li>
             <strong>{{ s.study_type or 'Estudio' }}</strong>

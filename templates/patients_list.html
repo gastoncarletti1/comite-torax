@@ -90,7 +90,7 @@
 <p class="meta">Resultados: {{ patients|length }}</p>
 
 {% if patients %}
-  <ul>
+  <ul class="patient-results">
     {% for p in patients %}
       <li>
         <a href="{{ url_for('patient_detail', patient_id=p.id) }}">
